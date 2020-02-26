@@ -1,0 +1,173 @@
+---
+title: "Problem Set 5"
+author: "Pete Cuppernull"
+date: "2/26/2020"
+output: pdf_document
+---
+
+##Load Packages and Data
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(rsample)
+library(glmnet)
+library(leaps)
+library(rcfss)
+library(patchwork)
+library(caret)
+library(h2o)
+library(ipred)
+library(adabag)
+
+
+gss_test <- na.omit(read_csv("data/gss_test.csv"))
+gss_train <- na.omit(read_csv("data/gss_train.csv"))
+
+```
+
+
+#Application
+
+##2. Estimate the Models
+
+###Logit
+```{r}
+gss_train_logit <- as_tibble(gss_train) %>%
+  mutate(colrac = factor(colrac))
+
+# function to generate assessment statistics for titanic model
+holdout_results <- function(splits) {
+  # Fit the model to the training set
+  mod <- glm(colrac ~ ., data = analysis(splits),
+             family = binomial)
+  
+  # `augment` will save the predictions with the holdout data set
+  res <- augment(mod, newdata = assessment(splits)) %>% 
+    as_tibble() %>%
+    mutate(.prob = logit2prob(.fitted),
+           .pred = round(.prob))
+
+  # Return the assessment data set with the additional columns
+  res
+}
+
+gss_logit_cv10 <- vfold_cv(data = gss_train_logit, v = 10) %>%
+  mutate(results = map(splits, holdout_results)) %>%
+  unnest(results) %>%
+  mutate(.pred = factor(.pred)) %>%
+  group_by(id) %>%
+  accuracy(truth = colrac, estimate = .pred)
+
+1 - mean(gss_logit_cv10$.estimate, na.rm = TRUE)
+```
+
+###Naive Bayes
+```{r}
+h2o.no_progress()
+h2o.init()
+
+#Save DFs as h20 objects
+train.h2o <- as.h2o(gss_train %>%
+                      mutate(colrac = as.factor(colrac)))
+test.h2o <- as.h2o(gss_test %>%
+                      mutate(colrac = as.factor(colrac)))
+
+#set variable names
+y <- "colrac"
+x <- setdiff(names(gss_train), y) 
+
+#NB Model
+nb <- h2o.naiveBayes(
+  x = x, 
+  y = y,
+  training_frame = train.h2o,
+  validation_frame = test.h2o,
+  seed = 123,
+  nfolds = 10)
+
+glimpse(nb)
+```
+
+###Elastic net regression
+```{r}
+gss_train_x <- model.matrix(colrac ~ ., gss_train)[, -1]
+gss_train_y <- gss_train$colrac
+
+gss_test_x <- model.matrix(colrac ~ ., gss_test)[, -1]
+gss_test_y <- gss_test$colrac
+
+lasso    <- glmnet(gss_train_x, gss_train_y, alpha = 1.0) 
+elastic1 <- glmnet(gss_train_x, gss_train_y, alpha = 0.25) 
+elastic2 <- glmnet(gss_train_x, gss_train_y, alpha = 0.75) 
+ridge    <- glmnet(gss_train_x, gss_train_y, alpha = 0.0)
+
+fold_id <- sample(1:10, size = length(gss_train_y), replace = TRUE)
+
+tuning_grid <- tibble::tibble(
+  alpha      = seq(0, 1, by = .1),
+  mse_min    = NA,
+  mse_1se    = NA,
+  lambda_min = NA,
+  lambda_1se = NA
+)
+
+for(i in seq_along(tuning_grid$alpha)) {
+  # fit CV model for each alpha value
+  fit <- cv.glmnet(gss_train_x, 
+                   gss_train_y, 
+                   alpha = tuning_grid$alpha[i], 
+                   foldid = fold_id)
+  
+  # extract MSE and lambda values
+  tuning_grid$mse_min[i]    <- fit$cvm[fit$lambda == fit$lambda.min]
+  tuning_grid$mse_1se[i]    <- fit$cvm[fit$lambda == fit$lambda.1se]
+  tuning_grid$lambda_min[i] <- fit$lambda.min
+  tuning_grid$lambda_1se[i] <- fit$lambda.1se
+}
+
+
+elastic_mse <- min(tuning_grid$mse_min)
+
+tuning_grid
+
+##Non zero coefs
+cv.glmnet <- cv.glmnet(
+  x = gss_train_x,
+  y = gss_train_y,
+  alpha = tuning_grid[which(tuning_grid[,2]==min(tuning_grid[,2])), 1]
+)
+
+cv.glmnet
+```
+
+###Decision tree (CART)
+###Bagging
+
+```{r}
+ctrl <- trainControl(method = "cv",     # Cross-validation
+                     number = 10,      # 5 folds
+                     classProbs = TRUE,                  # For AUC
+                     summaryFunction = twoClassSummary)  # For AUC
+
+# Cross validate the credit model using "treebag" method; 
+# Track AUC (Area under the ROC curve)
+set.seed(1)  # for reproducibility
+
+
+gss_bag <- gss_train %>%
+  mutate(colrac = make.names(as.character(if_else(colrac == 1, TRUE, FALSE))))
+
+
+gss_bag_cv <- train(colrac ~ .,
+                            data = gss_bag, 
+                            method = "treebag",
+                            metric = "ROC",
+                            trControl = ctrl)
+
+gss_bag_cv
+```
+
+
+
+###Random forest
+###Boosting
