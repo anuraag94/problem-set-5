@@ -65,15 +65,7 @@ gss_logit_cv10 <- vfold_cv(data = gss_train_logit, v = 10) %>%
 logit_error <- 1 - mean(gss_logit_cv10$.estimate, na.rm = TRUE)
 
 
-
-
-###figure out auc
-glimpse(gss_logit_cv10)
-
-gss_logit_cv10 %>%
-  roc_curve(truth = colrac, .estimate) %>%
-  autoplot()
-
+##roc
 logit_roc <- vfold_cv(data = gss_train_logit, v = 10) %>%
   mutate(results = map(splits, holdout_results)) %>%
   unnest(results) %>%
@@ -111,7 +103,10 @@ nb <- h2o.naiveBayes(
   seed = 123,
   nfolds = 10)
 
-glimpse(nb)
+nb_auc <- h2o.auc(nb, valid = TRUE)
+
+
+nb
 ```
 
 ###Elastic net regression
@@ -156,14 +151,28 @@ elastic_mse <- min(tuning_grid$mse_min)
 
 tuning_grid
 
-##Non zero coefs
-cv.glmnet <- cv.glmnet(
-  x = gss_train_x,
-  y = gss_train_y,
-  alpha = tuning_grid[which(tuning_grid[,2]==min(tuning_grid[,2])), 1]
-)
+##now that we have the model, lets generate predictions so we can calculate error rate and AUC
+best_elastic_mod <- cv.glmnet(gss_train_x, 
+                   gss_train_y, 
+                   alpha = 0.3, 
+                   foldid = fold_id)
 
-cv.glmnet
+
+roc(response = colrac, predictor = .pred)
+
+glimpse(best_elastic_mod)
+
+elastic_error <- mean(best_elastic_mod$cvm)
+
+best_elastic_mod_auc <- cv.glmnet(gss_train_x, 
+                   gss_train_y, 
+                   alpha = 0.3, 
+                   family = "binomial",
+                   type.measure = "auc",
+                   foldid = fold_id)
+
+
+elastic_auc <- mean(best_elastic_mod_auc$cvm)
 ```
 
 ###Decision tree (CART)
@@ -200,6 +209,24 @@ ggplot(gss_cv_tree_prune, aes(k, 1 - .estimate)) +
        y = "10-fold CV error rate")
 
 gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]]
+
+gss_cv_tree_prune$.estimate[[which.max(gss_cv_tree_prune$.estimate)]]
+
+#find auc
+tree_auc <- expand.grid(gss_tree_cv$id, 2:30) %>%
+  as_tibble() %>%
+  mutate(Var2 = as.numeric(Var2)) %>%
+  rename(id = Var1,
+         k = Var2) %>%
+  left_join(gss_tree_cv) %>%
+  mutate(prune = map2(tree, k, ~ prune.tree(.x, best = .y)),
+         estimate = map2(prune, splits, ~ predict(.x, newdata = assessment(.y))[,2]),
+         truth = map(splits, ~ assessment(.x)$colrac)) %>%
+  unnest(estimate, truth) %>%
+  mutate(estimate = round(estimate)) %>%
+  group_by(k) %>%
+  roc(response = truth, predictor = estimate)
+
 ```
 
 
@@ -208,7 +235,7 @@ gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]]
 
 ```{r}
 ctrl <- trainControl(method = "cv",     # Cross-validation
-                     number = 10,      # 5 folds
+                     number = 10,      # 10 folds
                      classProbs = TRUE,                  # For AUC
                      summaryFunction = twoClassSummary)  # For AUC
 
@@ -227,7 +254,19 @@ gss_bag_cv <- train(colrac ~ .,
                             metric = "ROC",
                             trControl = ctrl)
 
-gss_bag_cv
+gss_bag_cv$results$ROC
+
+gss_bag_cv_accuracy <- ?train(colrac ~ .,
+                            data = gss_bag, 
+                            method = "treebag",
+                            metric = "Accuracy",
+                            
+                            trControl = ctrl)
+
+glimpse(gss_bag_cv)
+
+bag_error<- (gss_bag_cv$results$Sens+gss_bag_cv$results$Spec)/2
+
 ```
 
 
@@ -321,18 +360,18 @@ ggplot() +
 
 Model performances:
   - Cross-validated error rate
-      - Logistic regression: 
-      - Naive Bayes
-      - Elastic net regression
-      - Decision tree (CART)
-      - Bagging
+      - Logistic regression: `r logit_error`
+      - Naive Bayes: 0.253388 (need to figure out how to do this automatically)
+      - Elastic net regression: `r elastic_error`
+      - Decision tree (CART): `r gss_cv_tree_prune$.estimate[[which.max(gss_cv_tree_prune$.estimate)]]`
+      - Bagging: `r bag_error`
       - Random forest
       - Boosting
   - ROC/AUC
       - Logistic regression: `r logit_roc$auc`
-      - Naive Bayes
-      - Elastic net regression
-      - Decision tree (CART)
-      - Bagging
+      - Naive Bayes: `r nb_auc`
+      - Elastic net regression: `r elastic_auc`
+      - Decision tree (CART): `r tree_auc$auc`
+      - Bagging: `r gss_bag_cv$results$ROC`
       - Random forest
       - Boosting
