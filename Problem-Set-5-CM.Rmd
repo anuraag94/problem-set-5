@@ -18,7 +18,11 @@ library(caret)
 library(h2o)
 library(ipred)
 library(adabag)
-
+library(randomForest)
+library(ranger)
+library(gbm)
+library(tree)
+library(pROC)
 
 gss_test <- na.omit(read_csv("data/gss_test.csv"))
 gss_train <- na.omit(read_csv("data/gss_train.csv"))
@@ -58,7 +62,29 @@ gss_logit_cv10 <- vfold_cv(data = gss_train_logit, v = 10) %>%
   group_by(id) %>%
   accuracy(truth = colrac, estimate = .pred)
 
-1 - mean(gss_logit_cv10$.estimate, na.rm = TRUE)
+logit_error <- 1 - mean(gss_logit_cv10$.estimate, na.rm = TRUE)
+
+
+
+
+###figure out auc
+glimpse(gss_logit_cv10)
+
+gss_logit_cv10 %>%
+  roc_curve(truth = colrac, .estimate) %>%
+  autoplot()
+
+logit_roc <- vfold_cv(data = gss_train_logit, v = 10) %>%
+  mutate(results = map(splits, holdout_results)) %>%
+  unnest(results) %>%
+  group_by(id) %>%
+  roc(response = colrac, predictor = .pred)
+
+
+glimpse(logit_roc)
+
+logit_roc$auc
+
 ```
 
 ###Naive Bayes
@@ -141,6 +167,43 @@ cv.glmnet
 ```
 
 ###Decision tree (CART)
+```{r}
+# generate 10-fold CV trees
+gss_tree_cv <- gss_train_logit %>%
+  vfold_cv(v = 10) %>%
+  mutate(tree = map(splits, ~ tree(colrac ~ ., data = analysis(.x),
+                                   control = tree.control(nobs = nrow(gss_train_logit),
+                                                          mindev = .001))))
+
+# calculate each possible prune result for each fold
+gss_cv_tree_prune <- expand.grid(gss_tree_cv$id, 2:30) %>%
+  as_tibble() %>%
+  mutate(Var2 = as.numeric(Var2)) %>%
+  rename(id = Var1,
+         k = Var2) %>%
+  left_join(gss_tree_cv) %>%
+  mutate(prune = map2(tree, k, ~ prune.tree(.x, best = .y)),
+         estimate = map2(prune, splits, ~ predict(.x, newdata = assessment(.y))[,2]),
+         truth = map(splits, ~ assessment(.x)$colrac)) %>%
+  unnest(estimate, truth) %>%
+  group_by(k) %>%
+  accuracy(truth = truth, estimate = factor(round(estimate), levels = 0:1, labels = c("0", "1")))
+
+ggplot(gss_cv_tree_prune, aes(k, 1 - .estimate)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]],
+             linetype = 2) +
+  labs(title = "Colrac predictions",
+       subtitle = "CV Decision Tree",
+       x = "Number of terminal nodes",
+       y = "10-fold CV error rate")
+
+gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]]
+```
+
+
+
 ###Bagging
 
 ```{r}
@@ -169,5 +232,107 @@ gss_bag_cv
 
 
 
-###Random forest
+###Random Forest
+```{r}
+default_rf <- randomForest(
+  formula = colrac ~ .,
+  data    = gss_train
+)
+
+
+hyper_grid <- expand.grid(
+  mtry = seq(14, 24, by = 2),
+  node_size = seq(2, 20, by = 2),
+  sampe_size = c(.55, .632, .70, .80),
+  OOB_RMSE = 0
+)
+
+# total number of combinations
+nrow(hyper_grid)
+
+# ranger: fast implementation of random forests (Breiman 2001)
+
+for(i in 1:nrow(hyper_grid)) {
+  # train model
+  model <- ranger(  
+    formula = colrac ~ ., 
+    data = gss_train, 
+    num.trees = 500,
+    mtry = hyper_grid$mtry[i],
+    min.node.size = hyper_grid$node_size[i],
+    sample.fraction = hyper_grid$sampe_size[i],
+    seed = 123
+  )
+  
+  # add OOB error to grid
+  hyper_grid$OOB_RMSE[i] <- sqrt(model$prediction.error)
+}
+
+
+# numerically inspect the model
+hyper_grid <- hyper_grid %>% 
+  arrange(OOB_RMSE)
+hyper_grid %>%
+  head(10)
+
+
+```
+
 ###Boosting
+```{r}
+boost_gss <- train(colrac ~ .,
+                          data = gss_train_logit,
+                          method = "gbm",
+                          trControl = trainControl(method = "cv", 
+                                                   number = 10, 
+                                                   verboseIter = FALSE),
+                          verbose = 0) # fit silently
+
+lambda <- seq(0.0001, 0.04, by = 0.001)
+
+boosted_tree_train <- function(lambda){
+  model <- gbm(colrac ~ .,
+    data = gss_train_logit,
+    distribution="gaussian",
+    n.trees=1000,
+    shrinkage = lambda,
+    cv.folds = 10)
+  
+mean(model$train.error)
+}
+
+
+
+boost_train_mses <- map_dbl(lambda, boosted_tree_train)
+
+boosted_mses <- as.data.frame(cbind(lambda, boost_train_mses)) %>%
+  rename(mse = `boost_train_mses`)
+
+ggplot() +
+  geom_point(data = boosted_mses, mapping = aes(lambda, mse), color = "blue") +
+  geom_line(data = boosted_mses, mapping = aes(lambda, mse), color = "red") +
+  labs(title = "MSEs Across Different Shrinkage Values",
+       y = "MSE",
+       x = "Lambda")
+
+```
+
+##3. Evaluate the Models
+
+Model performances:
+  - Cross-validated error rate
+      - Logistic regression: 
+      - Naive Bayes
+      - Elastic net regression
+      - Decision tree (CART)
+      - Bagging
+      - Random forest
+      - Boosting
+  - ROC/AUC
+      - Logistic regression: `r logit_roc$auc`
+      - Naive Bayes
+      - Elastic net regression
+      - Decision tree (CART)
+      - Bagging
+      - Random forest
+      - Boosting
