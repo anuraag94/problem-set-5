@@ -256,12 +256,7 @@ gss_bag_cv <- train(colrac ~ .,
 
 gss_bag_cv$results$ROC
 
-gss_bag_cv_accuracy <- ?train(colrac ~ .,
-                            data = gss_bag, 
-                            method = "treebag",
-                            metric = "Accuracy",
-                            
-                            trControl = ctrl)
+
 
 glimpse(gss_bag_cv)
 
@@ -271,7 +266,7 @@ bag_error<- (gss_bag_cv$results$Sens+gss_bag_cv$results$Spec)/2
 
 
 
-###Random Forest
+###Random Forest -- I NEED TO MODIFY THIS SO IT IS CV
 ```{r}
 default_rf <- randomForest(
   formula = colrac ~ .,
@@ -281,7 +276,7 @@ default_rf <- randomForest(
 
 hyper_grid <- expand.grid(
   mtry = seq(14, 24, by = 2),
-  node_size = seq(2, 20, by = 2),
+  node_size = seq(3, 9, by = 2),
   sampe_size = c(.55, .632, .70, .80),
   OOB_RMSE = 0
 )
@@ -314,7 +309,23 @@ hyper_grid <- hyper_grid %>%
 hyper_grid %>%
   head(10)
 
+best_rf <- ranger(
+    formula = colrac ~ ., 
+    data = gss_train_logit, 
+    num.trees = 500,
+    mtry = hyper_grid$mtry[[1]],
+    min.node.size = hyper_grid$node_size[[1]],
+    sample.fraction = hyper_grid$sampe_size[[1]]
+  )
 
+
+glimpse(best_rf)
+
+rf_error <- best_rf$prediction.error
+
+preds_num <- as.numeric(best_rf$predictions)
+
+rf_auc <- roc(response = gss_train$colrac, predictor = preds_num)
 ```
 
 ###Boosting
@@ -340,21 +351,55 @@ boosted_tree_train <- function(lambda){
 mean(model$train.error)
 }
 
+  modeltest2 <- gbm(colrac ~ .,
+    data = gss_train,
+    distribution= "bernoulli",
+    n.trees=1000,
+    shrinkage = .01,
+    cv.folds = 10)
+  
+mean(modeltest$train.error)
+
+modeltest2
 
 
-boost_train_mses <- map_dbl(lambda, boosted_tree_train)
+boost_train_error <- map_dbl(lambda, boosted_tree_train)
 
-boosted_mses <- as.data.frame(cbind(lambda, boost_train_mses)) %>%
+boosted_errors <- as.data.frame(cbind(lambda, boost_train_error)) %>%
   rename(mse = `boost_train_mses`)
 
-ggplot() +
-  geom_point(data = boosted_mses, mapping = aes(lambda, mse), color = "blue") +
-  geom_line(data = boosted_mses, mapping = aes(lambda, mse), color = "red") +
-  labs(title = "MSEs Across Different Shrinkage Values",
-       y = "MSE",
-       x = "Lambda")
+which.min(boosted_errors$boost_train_error)
+
+glimpse(modeltest2)
+modeltest2$
+modeltest$self.statistics$discrimination
 
 ```
+
+lets try with caret
+```{r}
+objModel <- train(trainDF[,predictorsNames], trainDF[,outcomeName], 
+                  method='gbm', 
+                  trControl=objControl,  
+                  metric = "ROC",
+                  preProc = c("center", "scale"))
+
+gss_boost_cv <- train(colrac ~ .,
+                            data = gss_bag, 
+                            method = "gbm",
+                            metric = "ROC",
+                            trControl = ctrl)
+
+mean(gss_boost_cv$results$ROC)
+
+
+
+glimpse(gss_boost_cv)
+
+boost_error<- (gss_boost_cv$results$Sens+gss_boost_cv$results$Spec)/2
+```
+
+
 
 ##3. Evaluate the Models
 
@@ -364,14 +409,14 @@ Model performances:
       - Naive Bayes: 0.253388 (need to figure out how to do this automatically)
       - Elastic net regression: `r elastic_error`
       - Decision tree (CART): `r gss_cv_tree_prune$.estimate[[which.max(gss_cv_tree_prune$.estimate)]]`
-      - Bagging: `r bag_error`
-      - Random forest
-      - Boosting
+      - Bagging: `r 1-bag_error`
+      - Random forest: `r rf_error`
+      - Boosting: `r 1-boost_error`
   - ROC/AUC
       - Logistic regression: `r logit_roc$auc`
       - Naive Bayes: `r nb_auc`
       - Elastic net regression: `r elastic_auc`
       - Decision tree (CART): `r tree_auc$auc`
       - Bagging: `r gss_bag_cv$results$ROC`
-      - Random forest
-      - Boosting
+      - Random forest: `r rf_auc`
+      - Boosting: `r mean(gss_boost_cv$results$ROC)` not sure if this is correct
