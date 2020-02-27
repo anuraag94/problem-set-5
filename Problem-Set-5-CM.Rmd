@@ -2,11 +2,13 @@
 title: "Problem Set 5"
 author: "Pete Cuppernull"
 date: "2/26/2020"
-output: pdf_document
+output: 
+  pdf_document:
+    latex_engine: xelatex
 ---
 
 ##Load Packages and Data
-```{r setup, include=FALSE}
+```{r setup, warning=FALSE, message=FALSE}
 library(tidyverse)
 library(tidymodels)
 library(rsample)
@@ -27,6 +29,7 @@ library(pROC)
 gss_test <- na.omit(read_csv("data/gss_test.csv"))
 gss_train <- na.omit(read_csv("data/gss_train.csv"))
 
+set.seed(1414)
 ```
 
 
@@ -35,7 +38,7 @@ gss_train <- na.omit(read_csv("data/gss_train.csv"))
 ##2. Estimate the Models
 
 ###Logit
-```{r}
+```{r, warning=FALSE, message=FALSE}
 gss_train_logit <- as_tibble(gss_train) %>%
   mutate(colrac = factor(colrac))
 
@@ -73,14 +76,10 @@ logit_roc <- vfold_cv(data = gss_train_logit, v = 10) %>%
   roc(response = colrac, predictor = .pred)
 
 
-glimpse(logit_roc)
-
-logit_roc$auc
-
 ```
 
 ###Naive Bayes
-```{r}
+```{r, warning=FALSE, message=FALSE}
 h2o.no_progress()
 h2o.init()
 
@@ -105,17 +104,16 @@ nb <- h2o.naiveBayes(
 
 nb_auc <- h2o.auc(nb, valid = TRUE)
 
-
-nb
 ```
 
 ###Elastic net regression
-```{r}
+```{r, warning=FALSE, message=FALSE}
 gss_train_x <- model.matrix(colrac ~ ., gss_train)[, -1]
 gss_train_y <- gss_train$colrac
 
 gss_test_x <- model.matrix(colrac ~ ., gss_test)[, -1]
 gss_test_y <- gss_test$colrac
+
 
 lasso    <- glmnet(gss_train_x, gss_train_y, alpha = 1.0) 
 elastic1 <- glmnet(gss_train_x, gss_train_y, alpha = 0.25) 
@@ -147,9 +145,6 @@ for(i in seq_along(tuning_grid$alpha)) {
 }
 
 
-elastic_mse <- min(tuning_grid$mse_min)
-
-tuning_grid
 
 ##now that we have the model, lets generate predictions so we can calculate error rate and AUC
 best_elastic_mod <- cv.glmnet(gss_train_x, 
@@ -157,9 +152,12 @@ best_elastic_mod <- cv.glmnet(gss_train_x,
                    alpha = 0.3, 
                    foldid = fold_id)
 
+best_elastic_mod_bin <- cv.glmnet(gss_train_x, 
+                   gss_train_y, 
+                   alpha = 0.3, 
+                   foldid = fold_id,
+                   family = "binomial")
 
-
-glimpse(best_elastic_mod)
 
 elastic_error <- mean(best_elastic_mod$cvm)
 
@@ -175,7 +173,7 @@ elastic_auc <- mean(best_elastic_mod_auc$cvm)
 ```
 
 ###Decision tree (CART)
-```{r}
+```{r, warning=FALSE, message=FALSE}
 # generate 10-fold CV trees
 gss_tree_cv <- gss_train_logit %>%
   vfold_cv(v = 10) %>%
@@ -197,19 +195,16 @@ gss_cv_tree_prune <- expand.grid(gss_tree_cv$id, 2:30) %>%
   group_by(k) %>%
   accuracy(truth = truth, estimate = factor(round(estimate), levels = 0:1, labels = c("0", "1")))
 
-ggplot(gss_cv_tree_prune, aes(k, 1 - .estimate)) +
-  geom_point() +
-  geom_line() +
-  geom_vline(xintercept = gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]],
-             linetype = 2) +
-  labs(title = "Colrac predictions",
-       subtitle = "CV Decision Tree",
-       x = "Number of terminal nodes",
-       y = "10-fold CV error rate")
+#ggplot(gss_cv_tree_prune, aes(k, 1 - .estimate)) +
+ # geom_point() +
+#  geom_line() +
+ # geom_vline(xintercept = gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]],
+#             linetype = 2) +
+#  labs(title = "Colrac predictions",
+#       subtitle = "CV Decision Tree",
+#       x = "Number of terminal nodes",
+#       y = "10-fold CV error rate")
 
-gss_cv_tree_prune$k[[which.max(gss_cv_tree_prune$.estimate)]]
-
-gss_cv_tree_prune$.estimate[[which.max(gss_cv_tree_prune$.estimate)]]
 
 #find auc
 tree_auc <- expand.grid(gss_tree_cv$id, 2:30) %>%
@@ -232,15 +227,12 @@ tree_auc <- expand.grid(gss_tree_cv$id, 2:30) %>%
 
 ###Bagging
 
-```{r}
+```{r, warning=FALSE, message=FALSE}
 ctrl <- trainControl(method = "cv",     # Cross-validation
                      number = 10,      # 10 folds
                      classProbs = TRUE,                  # For AUC
                      summaryFunction = twoClassSummary)  # For AUC
 
-# Cross validate the credit model using "treebag" method; 
-# Track AUC (Area under the ROC curve)
-set.seed(1)  # for reproducibility
 
 
 gss_bag <- gss_train %>%
@@ -253,11 +245,7 @@ gss_bag_cv <- train(colrac ~ .,
                             metric = "ROC",
                             trControl = ctrl)
 
-gss_bag_cv$results$ROC
 
-
-
-glimpse(gss_bag_cv)
 
 bag_error<- (gss_bag_cv$results$Sens+gss_bag_cv$results$Spec)/2
 
@@ -266,22 +254,14 @@ bag_error<- (gss_bag_cv$results$Sens+gss_bag_cv$results$Spec)/2
 
 
 ###Random Forest -- I NEED TO MODIFY THIS SO IT IS CV
-```{r}
-default_rf <- randomForest(
-  formula = colrac ~ .,
-  data    = gss_train
-)
-
+```{r, warning=FALSE, message=FALSE}
 
 hyper_grid <- expand.grid(
   mtry = seq(14, 24, by = 2),
   node_size = seq(3, 9, by = 2),
   sampe_size = c(.55, .632, .70, .80),
-  OOB_RMSE = 0
-)
+  OOB_RMSE = 0)
 
-# total number of combinations
-nrow(hyper_grid)
 
 # ranger: fast implementation of random forests (Breiman 2001)
 
@@ -294,8 +274,7 @@ for(i in 1:nrow(hyper_grid)) {
     mtry = hyper_grid$mtry[i],
     min.node.size = hyper_grid$node_size[i],
     sample.fraction = hyper_grid$sampe_size[i],
-    seed = 123
-  )
+    seed = 123)
   
   # add OOB error to grid
   hyper_grid$OOB_RMSE[i] <- sqrt(model$prediction.error)
@@ -305,8 +284,7 @@ for(i in 1:nrow(hyper_grid)) {
 # numerically inspect the model
 hyper_grid <- hyper_grid %>% 
   arrange(OOB_RMSE)
-hyper_grid %>%
-  head(10)
+
 
 best_rf <- ranger(
     formula = colrac ~ ., 
@@ -314,87 +292,27 @@ best_rf <- ranger(
     num.trees = 500,
     mtry = hyper_grid$mtry[[1]],
     min.node.size = hyper_grid$node_size[[1]],
-    sample.fraction = hyper_grid$sampe_size[[1]]
-  )
+    sample.fraction = hyper_grid$sampe_size[[1]])
 
-
-glimpse(best_rf)
 
 rf_error <- best_rf$prediction.error
 
 preds_num <- as.numeric(best_rf$predictions)
 
 rf_auc <- roc(response = gss_train$colrac, predictor = preds_num)
+
 ```
 
 ###Boosting
-DONT RUN THIS SECTION
-```{r}
-boost_gss <- train(colrac ~ .,
-                          data = gss_train_logit,
-                          method = "gbm",
-                          trControl = trainControl(method = "cv", 
-                                                   number = 10, 
-                                                   verboseIter = FALSE),
-                          verbose = 0) # fit silently
 
-lambda <- seq(0.0001, 0.04, by = 0.001)
-
-boosted_tree_train <- function(lambda){
-  model <- gbm(colrac ~ .,
-    data = gss_train_logit,
-    distribution="gaussian",
-    n.trees=1000,
-    shrinkage = lambda,
-    cv.folds = 10)
-  
-mean(model$train.error)
-}
-
-  modeltest2 <- gbm(colrac ~ .,
-    data = gss_train,
-    distribution= "bernoulli",
-    n.trees=1000,
-    shrinkage = .01,
-    cv.folds = 10)
-  
-mean(modeltest$train.error)
-
-modeltest2
-
-
-boost_train_error <- map_dbl(lambda, boosted_tree_train)
-
-boosted_errors <- as.data.frame(cbind(lambda, boost_train_error)) %>%
-  rename(mse = `boost_train_mses`)
-
-which.min(boosted_errors$boost_train_error)
-
-glimpse(modeltest2)
-modeltest2$
-modeltest$self.statistics$discrimination
-
-```
-
-lets try with caret
-```{r}
-objModel <- train(trainDF[,predictorsNames], trainDF[,outcomeName], 
-                  method='gbm', 
-                  trControl=objControl,  
-                  metric = "ROC",
-                  preProc = c("center", "scale"))
-
+```{r, warning=FALSE, message=FALSE}
 gss_boost_cv <- train(colrac ~ .,
                             data = gss_bag, 
                             method = "gbm",
                             metric = "ROC",
                             trControl = ctrl)
 
-mean(gss_boost_cv$results$ROC)
 
-
-
-glimpse(gss_boost_cv)
 
 boost_error<- (gss_boost_cv$results$Sens+gss_boost_cv$results$Spec)/2
 ```
@@ -404,19 +322,56 @@ boost_error<- (gss_boost_cv$results$Sens+gss_boost_cv$results$Spec)/2
 ##3. Evaluate the Models
 
 Model performances:
+
   - Cross-validated error rate
+  
       - Logistic regression: `r logit_error`
+      
       - Naive Bayes: 0.253388 (need to figure out how to do this automatically)
+      
       - Elastic net regression: `r elastic_error`
-      - Decision tree (CART): `r gss_cv_tree_prune$.estimate[[which.max(gss_cv_tree_prune$.estimate)]]`
+      
+      - Decision tree (CART): `r 1-gss_cv_tree_prune$.estimate[[which.max(gss_cv_tree_prune$.estimate)]]`
+      
       - Bagging: `r 1-bag_error`
+      
       - Random forest: `r rf_error`
-      - Boosting: `r 1-boost_error`
+      
+      - Boosting: `r mean(1-boost_error)`
+      
   - ROC/AUC
+  
       - Logistic regression: `r logit_roc$auc`
+      
       - Naive Bayes: `r nb_auc`
+      
       - Elastic net regression: `r elastic_auc`
+      
       - Decision tree (CART): `r tree_auc$auc`
+      
       - Bagging: `r gss_bag_cv$results$ROC`
-      - Random forest: `r rf_auc`
+      
+      - Random forest: `r rf_auc$auc`
+      
       - Boosting: `r mean(gss_boost_cv$results$ROC)` not sure if this is correct
+      
+##4. Which is the best model? Defend your choice.
+
+Considering the classification error rates and the AUC results, I believe the best model is the one produced by the elastic net regression. This model exhibits the lowest classification error rate at 16.02%, which is substantially better than the next best model (random forest, at 19.8% error). Further, its AUC performed second best, just behind the boosting model, at .864 compared to .875, respectively. Considering that the AUC results are somewhat close and the elastic net is clearly the best performer in terms of error rate, I argue that elastic net regression is the best modeling procedure.
+
+##5. Evaluate the best model
+```{r, warning=FALSE, message=FALSE}
+#Generate Preds
+test_preds <- as.numeric(predict(best_elastic_mod_bin, 
+        newx = gss_test_x,
+        type= "class"))
+
+#Classification error rate
+test_error <- sum(abs(test_preds-gss_test_y))/493
+
+test_auc <- roc(response = gss_test_y, predictor = test_preds)
+
+```
+
+The test classification error rate is `r test_error` and the test AUC is `r test_auc$auc`. We can compare this to the training error rate of `r elastic_error` and training AUC of `r elastic_auc`. From these results, we can see that the model did not generalize as well as we would have hoped -- while we should expect the test error rate to be slightly lower than the cross validation error rate (because with CV, we are still (to a degree) validating against data that was used to build the model), an increase of about 5% in the error rate and drop of about .08 in the AUC are substantial steps backward. In further research, I would likely also consider testing the boosting model since it performed nearly as well on the test sample as elastic net.
+
