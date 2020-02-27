@@ -158,7 +158,6 @@ best_elastic_mod <- cv.glmnet(gss_train_x,
                    foldid = fold_id)
 
 
-roc(response = colrac, predictor = .pred)
 
 glimpse(best_elastic_mod)
 
@@ -329,6 +328,7 @@ rf_auc <- roc(response = gss_train$colrac, predictor = preds_num)
 ```
 
 ###Boosting
+DONT RUN THIS SECTION
 ```{r}
 boost_gss <- train(colrac ~ .,
                           data = gss_train_logit,
