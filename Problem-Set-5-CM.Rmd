@@ -31,6 +31,9 @@ gss_train <- na.omit(read_csv("data/gss_train.csv"))
 
 set.seed(1414)
 ```
+#Conceptual: Cost functions for classification trees
+
+When growing a decision tree, either the GINI index or cross-entropy are preferable to misclassification rate because they have a greater capacity to produce pure nodes.  The best pick between these two approaches is sometimes context dependent, but on average the GINI index would likely be preferable because it is less computationally expnsive than cross-entropy (as it does not require computing logarithms). When pruning a decision tree, typically the misclassification rate is used (see ESL, p. 310).
 
 
 #Application
@@ -79,7 +82,7 @@ logit_roc <- vfold_cv(data = gss_train_logit, v = 10) %>%
 ```
 
 ###Naive Bayes
-```{r, warning=FALSE, message=FALSE}
+```{r, warning=FALSE, message=FALSE, results='hide'}
 h2o.no_progress()
 h2o.init()
 
@@ -305,7 +308,7 @@ rf_auc <- roc(response = gss_train$colrac, predictor = preds_num)
 
 ###Boosting
 
-```{r, warning=FALSE, message=FALSE}
+```{r, warning=FALSE, message=FALSE, results='hide'}
 gss_boost_cv <- train(colrac ~ .,
                             data = gss_bag, 
                             method = "gbm",
@@ -353,7 +356,7 @@ Model performances:
       
       - Random forest: `r rf_auc$auc`
       
-      - Boosting: `r mean(gss_boost_cv$results$ROC)` not sure if this is correct
+      - Boosting: `r mean(gss_boost_cv$results$ROC)`
       
 ##4. Which is the best model? Defend your choice.
 
