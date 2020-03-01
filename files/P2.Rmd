@@ -1,0 +1,140 @@
+---
+title: "Application Exercises"
+author: "Adarsh Mathew"
+date: "2/24/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+library(rsample)
+library(pROC)
+library(furrr)
+```
+
+```{r}
+gss_train_df <- read_csv("../data/gss_train.csv", 
+                         col_types = cols(colrac = col_factor(levels = c("1", "0")))) %>%
+   mutate(colrac = factor(colrac, 
+                          labels = make.names(levels(colrac))))
+
+gss_test_df <- read_csv("../data/gss_test.csv", 
+                         col_types = cols(colrac = col_factor(levels = c("1", "0")))) %>%
+   mutate(colrac = factor(colrac, 
+                          labels = make.names(levels(colrac))))
+```
+
+
+## Model Estimation
+
+```{r}
+model_gen <- function(model_type){
+  set.seed(02242020)
+  tr_control <- trainControl(method = "cv", number = 10,
+                             summaryFunction=twoClassSummary,
+                             classProbs=T,
+                             savePredictions = T)
+  
+  gss_model <- train(form = colrac ~ ., data = gss_train_df,
+                     method = model_type, preProcess = c("center", "scale"),
+                     metric = "ROC", trControl = tr_control)
+  
+  return(gss_model)
+}
+```
+
+
+```{r warning=FALSE, cache=TRUE}
+plan(multiprocess)
+
+model_df <- c("Logit" = "glm", 
+              "Naive Bayes" = "nb", 
+              "Elastic Net" = "glmnet",
+              "CART_1se" = "rpart1SE", 
+              "Bagged Trees" = "treebag", 
+              "Random Forest" = "rf", 
+              "xgBoosted Trees" = "xgbTree") %>% 
+  enframe(name = "model_name", value = "model_io") %>%
+  mutate(model_obj = future_map(model_io, ~model_gen(.x), .progress = TRUE))
+  
+```
+
+## Model Evaluation
+
+```{r}
+model_cv_metrics <- function(model_obj, model_io){
+  pred_mat <- model_obj$pred
+  model_roc <- twoClassSummary(pred_mat, lev = levels(pred_mat$pred))["ROC"]
+  model_auc <- prSummary(pred_mat, lev = levels(pred_mat$pred), model = model_io)["AUC"]
+  model_acc <- postResample(pred = pred_mat$pred, obs = pred_mat$obs)["Accuracy"]
+  
+  return(tibble(model_cv_accuracy = model_acc,
+                #model_cv_ROC = model_roc,
+                model_cv_AUC = model_auc))
+  
+}
+```
+
+```{r}
+model_df <- model_df %>%
+  mutate(xx = map2(model_obj, model_io, model_cv_metrics)) %>%
+  unnest(xx)
+
+model_df %>%
+  select(-model_obj) %>%
+  arrange(desc(model_cv_AUC))
+```
+
+## Model Selection
+
+```{r}
+model_test_metrics <- function(model_obj, model_io){
+  pred_df <- gss_test_df %>%
+    select(colrac) %>%
+    mutate(obs = colrac) %>%
+    bind_cols(pred = as.factor(predict(model_obj, newdata = gss_test_df, type = c("raw"))),
+              predict(model_obj, newdata = gss_test_df, type = c("prob")))
+  
+  #model_roc <- twoClassSummary(pred_df, lev = levels(pred_df$pred))["ROC"]
+  model_auc <- prSummary(pred_df, lev = levels(pred_df$pred), model = model_io)["AUC"]
+  model_acc <- postResample(pred_df$pred, pred_df$colrac)["Accuracy"]
+  
+  return(tibble(model_test_accuracy = model_acc,
+                #model_test_ROC = model_roc,
+                model_test_AUC = model_auc))
+  
+}
+```
+
+```{r warning=FALSE}
+model_df <- model_df %>%
+  mutate(xx = map2(model_obj, model_io, model_test_metrics)) %>%
+  unnest(xx)
+
+model_df %>% 
+  select(-model_obj) %>%
+  arrange(desc(model_test_AUC))
+```
+
+```{r fig.width=10, cache=TRUE}
+model_df_stats <- model_df %>%
+  pivot_longer(cols = c("model_test_accuracy", "model_cv_accuracy",
+                        "model_test_AUC", "model_cv_AUC"), 
+               names_to = "metric_type", values_to = "metric_value") %>%
+  select(-model_obj) %>%
+  separate(col = "metric_type", into = c("model", "df_type", "metric_type"), sep = "_") %>%
+  select(-model)
+  
+model_df_stats %>%
+  ggplot(aes(x = model_name, y = metric_value, colour = metric_type)) +
+  geom_point() +
+  facet_wrap(vars(df_type, metric_type)) + coord_flip() + 
+  theme_minimal() +
+  ggtitle("Accuracy and AUC across models", subtitle = "CV and Test sets")
+```
+
+On purely CV metrics, Logistic, Elastic Net, and Random Forest perform best. They have high AUC and accuracy metrics. Of these, I'd choose Logistic since it would have greater interpretability over Random Forest, and it has higher metrics than Elastic Net.
+
+Looking at the test metrics though, we see Random Forest drop away, with xgBoost performing marginally better than Logistic and Elastic Net. I'd still pick Logistic, given the interpretability advantages and that it seems to generalize well here. 
